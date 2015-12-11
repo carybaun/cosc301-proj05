@@ -9,26 +9,13 @@
 #include <string.h>
 #include <ctype.h>
 
+
 #include "bootsect.h"
 #include "bpb.h"
 #include "direntry.h"
 #include "fat.h"
 #include "dos.h"
 
-void usage(char *progname)
-{
-    fprintf(stderr, "usage: %s <imagename> <filename>\n", progname);
-    exit(1);
-}
-
-
-
-void print_indent(int indent)
-{
-    int i;
-    for (i = 0; i < indent*4; i++)
-	printf(" ");
-}
 /* write the values into a directory entry */
 void write_dirent(struct direntry *dirent, char *filename, 
 		  uint16_t start_cluster, uint32_t size)
@@ -45,10 +32,9 @@ void write_dirent(struct direntry *dirent, char *filename,
     p2 = uppername;
     for (i = 0; i < strlen(filename); i++) 
     {
-	if (p2[i] == '/' || p2[i] == '\\') 
-	{
+		if (p2[i] == '/' || p2[i] == '\\') {
 	    uppername = p2+i+1;
-	}
+		}
     }
 
     /* convert filename to upper case */
@@ -63,15 +49,15 @@ void write_dirent(struct direntry *dirent, char *filename,
     memcpy(dirent->deExtension, "___", 3);
     if (p == NULL) 
     {
-	fprintf(stderr, "No filename extension given - defaulting to .___\n");
+		fprintf(stderr, "No filename extension given - defaulting to .___\n");
     }
     else 
     {
-	*p = '\0';
-	p++;
-	len = strlen(p);
-	if (len > 3) len = 3;
-	memcpy(dirent->deExtension, p, len);
+		*p = '\0';
+		p++;
+		len = strlen(p);
+		if (len > 3) len = 3;
+		memcpy(dirent->deExtension, p, len);
     }
 
     if (strlen(uppername)>8) 
@@ -121,8 +107,14 @@ void create_dirent(struct direntry *dirent, char *filename,
     }
 }
 
+void print_indent(int indent)
+{
+    int i;
+    for (i = 0; i < indent*4; i++)
+	printf(" ");
+}
 
-
+//changed some of this so it can find inconsistent sizes 
 uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, struct bpb33 *bpb, int *clust_ref) {
 
     uint16_t followclust = 0;
@@ -216,57 +208,52 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
 
 	int chain_count = 0;			// cluster chain count in FAT
 	uint16_t cluster = getushort(dirent->deStartCluster);
-	uint16_t first_cluster = cluster;
+	uint16_t first = cluster;
 	uint16_t prev; 
 
+	// go through cluster chain to detect any bad clusters 
 	while(is_valid_cluster(cluster, bpb)) {
 		clust_ref[cluster]++;
-		if (clust_ref[cluster] > 1) {
+		if (clust_ref[cluster] > 1) {   // multiple refs to same cluster
 			dirent->deName[0] = SLOT_DELETED;
 			clust_ref[cluster]--;
 		}
 		prev = cluster;
 		cluster = get_fat_entry(cluster, image_buf, bpb);
-		if (prev == cluster) {
-			set_fat_entry(cluster, FAT12_MASK & CLUST_EOFS, image_buf, bpb);
-			chain_count++;
-			break;
-		}
 
-		if (cluster == (FAT12_MASK & CLUST_BAD)) {
-			//bad cluster
+		if (cluster == (FAT12_MASK & CLUST_BAD)) {  // bad cluster
 			set_fat_entry(cluster,FAT12_MASK & CLUST_FREE, image_buf, bpb);
 			set_fat_entry(prev,FAT12_MASK & CLUST_EOFS, image_buf,bpb);
 			chain_count++;
 			break;
 		}
-		
+
 		chain_count++;
-    }
-		int count_cluster_meta = 0;		// metadata num clusters
+   	 }
+		int meta_clusters = 0;		// metadata # clusters
 		uint32_t newsize = 0;
+
 		if (size%512 == 0) {
-		 	count_cluster_meta = size/512;
+		 	meta_clusters = size/512;
 		}
 		else {
-			count_cluster_meta = (size/512) + 1;
+			meta_clusters = (size/512) + 1;
 		}
 
-		if (count_cluster_meta < chain_count) {
-			// inconsistent because file size < FAT # clusters 
-			cluster = get_fat_entry(first_cluster + count_cluster_meta -1, image_buf, bpb);
+		if (meta_clusters < chain_count) {  // file size < # clusters in FAT
+			cluster = get_fat_entry(first + meta_clusters -1, image_buf, bpb);
 	
 			while (is_valid_cluster(cluster,bpb)) {
 				prev = cluster;
 				set_fat_entry(prev, FAT12_MASK & CLUST_FREE, image_buf, bpb);
 				cluster = get_fat_entry(cluster,image_buf, bpb);
 			}
-			set_fat_entry(first_cluster + count_cluster_meta - 1, FAT12_MASK & CLUST_EOFS, image_buf, bpb); 
+			set_fat_entry(first + meta_clusters - 1, FAT12_MASK & CLUST_EOFS, image_buf, bpb); 
+
 			printf("New size: %d\n", newsize);
 			printf("Old size: %d\n", size);
 		}
-		else if (count_cluster_meta < chain_count) {
-			// inconsistent because file size > FAT # clusters
+		else if (meta_clusters < chain_count) {  // file size > # clusters in FAT
 			newsize = chain_count * bpb->bpbBytesPerSec;
 			putulong(dirent->deFileSize, newsize);
 		}
@@ -275,8 +262,7 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
     return followclust;
 }
 
-
-// follow cluster
+// scan through file hierarchy and check for consistencies in every dir entry
 void follow_dir(uint16_t cluster, int indent,
 		uint8_t *image_buf, struct bpb33* bpb, int *clust_ref)
 {
@@ -302,13 +288,9 @@ void follow_dir(uint16_t cluster, int indent,
 }
 
 
-
-
-
 void traverse_root(uint8_t *image_buf, struct bpb33* bpb, int *clust_ref)
 {
     uint16_t cluster = 0;
-
     struct direntry *dirent = (struct direntry*)cluster_to_addr(cluster, image_buf, bpb);
 
 	for (int i = 0 ; i < bpb->bpbRootDirEnts; i++) {
@@ -323,6 +305,65 @@ void traverse_root(uint8_t *image_buf, struct bpb33* bpb, int *clust_ref)
  
 }
 
+// goes through cluster list and saves num_orphans in memory 
+void save_orphans(uint8_t *image_buf, struct bpb33* bpb, int *clust_ref) {
+    int num_orphans = 0;
+
+
+    for (int i = 2; i < bpb->bpbSectors; i++) {
+		uint16_t cluster = get_fat_entry(i, image_buf, bpb); 
+		//printf("Index: %d, FAT entry: %d\n", i, cluster); 
+		if (clust_ref[i] == 0 && cluster != (FAT12_MASK & CLUST_FREE) && cluster != (FAT12_MASK & CLUST_BAD)) {
+	
+			num_orphans++;
+			int size = bpb->bpbBytesPerSec;
+			clust_ref[i] = 1;
+			// must_save: iterating pointer to orphan chains
+			uint16_t must_save = cluster; 
+			while (is_valid_cluster(must_save, bpb)) {
+				//crazy situation: orphan points to inconsistent clusters
+				//weird problem with badimage5: cyclical reference to each other
+				//also, FAT entry 4095? How BIG is a FAT?	
+				if (clust_ref[must_save] > 1) {
+					struct direntry *dirent = (struct direntry*)cluster_to_addr(must_save, image_buf, bpb); 
+					dirent->deName[0] = SLOT_DELETED; 
+					clust_ref[must_save]--;
+					printf("Multiple references to same orphan cluster!\n"); 
+				}
+				else if (clust_ref[must_save] == 1) {
+					set_fat_entry(must_save, (FAT12_MASK & CLUST_EOFS), image_buf, bpb);
+				}
+				else if (clust_ref[must_save] == 0) {
+					clust_ref[must_save]++;
+				}
+				size += bpb->bpbBytesPerSec;
+				must_save = get_fat_entry(must_save, image_buf, bpb);
+			}
+			char num[5];
+			sprintf(num, "%d", num_orphans);
+			char filename[1024] = "";
+			strcat(filename, "found");
+			strcat(filename, num); 
+			strcat(filename, ".dat");
+			char *file = filename; 
+			printf("Bringing %s to orphanage.\n", filename);
+			struct direntry *orphanage = (struct direntry*)root_dir_addr(image_buf, bpb); 
+			create_dirent(orphanage, file, i, size, image_buf, bpb); 
+			
+			printf("Brought %s to the orphanage!\n", filename); 
+			printf("Size is %d\n", size); 
+		}
+	}
+	printf("Found %d orphan(s).\n", num_orphans); 
+	
+}
+
+void usage(char *progname)
+{
+    fprintf(stderr, "usage: %s <imagename> <filename>\n", progname);
+    exit(1);
+}
+
 int main(int argc, char** argv) {
     uint8_t *image_buf;
     int fd;
@@ -333,14 +374,15 @@ int main(int argc, char** argv) {
 
     image_buf = mmap_file(argv[1], &fd);
     bpb = check_bootsector(image_buf);
-	
-	int *clust_ref = malloc(sizeof(int) * bpb->bpbSectors);		// keep track of clust references 
-	for (int i = 0; i <bpb->bpbSectors; i++) {
+
+	int *clust_ref = malloc(sizeof(int) * bpb->bpbSectors);
+	for (int i=0; i <bpb->bpbSectors; i++) {
 		clust_ref[i] = 0;
 	}
 	traverse_root(image_buf,bpb,clust_ref);
+	save_orphans(image_buf,bpb,clust_ref);
 
-
+			
     unmmap_file(image_buf, &fd);
 	free((void*)clust_ref);
     return 0;
