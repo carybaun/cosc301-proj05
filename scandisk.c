@@ -9,12 +9,13 @@
 #include <string.h>
 #include <ctype.h>
 
-
 #include "bootsect.h"
 #include "bpb.h"
 #include "direntry.h"
 #include "fat.h"
 #include "dos.h"
+
+
 
 /* write the values into a directory entry */
 void write_dirent(struct direntry *dirent, char *filename, 
@@ -114,7 +115,7 @@ void print_indent(int indent)
 	printf(" ");
 }
 
-//changed some of this so it can find inconsistent sizes 
+// find inconsistent sizes 
 uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, struct bpb33 *bpb, int *clust_ref) {
 
     uint16_t followclust = 0;
@@ -262,41 +263,105 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
     return followclust;
 }
 
+
+
+uint16_t get_dirent(struct direntry *dirent, char *buffer) {
+    uint16_t followclust = 0;
+    memset(buffer, 0, MAXFILENAME);
+
+    int i;
+    char name[9];
+    char extension[4];
+    uint16_t file_cluster;
+    name[8] = ' ';
+    extension[3] = ' ';
+    memcpy(name, &(dirent->deName[0]), 8);
+    memcpy(extension, dirent->deExtension, 3);
+    if (name[0] == SLOT_EMPTY) return followclust;
+
+    /* skip over deleted entries */
+    if (((uint8_t)name[0]) == SLOT_DELETED) return followclust;
+
+    // dot entry ("." or "..")
+    // skip it
+    if (((uint8_t)name[0]) == 0x2E) return followclust;
+
+    /* names are space padded - remove the spaces */
+    for (i = 8; i > 0; i--) {
+        if (name[i] == ' ') name[i] = '\0';
+        else break;
+    }
+
+    /* remove the spaces from extensions */
+    for (i = 3; i > 0; i--) {
+        if (extension[i] == ' ') extension[i] = '\0';
+        else break;
+    }
+
+    if ((dirent->deAttributes & ATTR_WIN95LFN) == ATTR_WIN95LFN) {
+        // ignore any long file name extension entries
+        //
+        // printf("Win95 long-filename entry seq 0x%0x\n", 
+        //          dirent->deName[0]);
+    } else if ((dirent->deAttributes & ATTR_DIRECTORY) != 0) {
+        // don't deal with hidden directories; MacOS makes these
+        // for trash directories and such; just ignore them.
+        if ((dirent->deAttributes & ATTR_HIDDEN) != ATTR_HIDDEN) {
+            strcpy(buffer, name);
+            file_cluster = getushort(dirent->deStartCluster);
+            followclust = file_cluster;
+        }
+    } else {
+        /*
+         * a "regular" file entry
+         * print attributes, size, starting cluster, etc.
+         */
+        strcpy(buffer, name);
+        if (strlen(extension))  {
+            strcat(buffer, ".");
+            strcat(buffer, extension);
+        }
+    }
+
+    return followclust;
+}
+
 // scan through file hierarchy and check for consistencies in every dir entry
 void follow_dir(uint16_t cluster, int indent,
-		uint8_t *image_buf, struct bpb33* bpb, int *clust_ref)
+		uint8_t *image_buf, struct bpb33* bpb,int *clust_ref)
 {
     while (is_valid_cluster(cluster, bpb))
     {
         struct direntry *dirent = (struct direntry*)cluster_to_addr(cluster, image_buf, bpb);
 
         int numDirEntries = (bpb->bpbBytesPerSec * bpb->bpbSecPerClust) / sizeof(struct direntry);
+	   	char buff[MAXFILENAME];
 
 	for (int i = 0; i < numDirEntries; i++)
 	{
-            
-       uint16_t followclust = print_dirent(dirent, indent,image_buf, bpb, clust_ref);
+       uint16_t followclust = get_dirent(dirent,buff);
             if (followclust){
-				clust_ref[followclust]++; 	//reference cluster 
                 follow_dir(followclust, indent+1, image_buf, bpb, clust_ref);
-            dirent++;	
 			}
+			dirent++;
 	}
 
 	cluster = get_fat_entry(cluster, image_buf, bpb);
     }
 }
 
-
-void traverse_root(uint8_t *image_buf, struct bpb33* bpb, int *clust_ref)
+void traverse_root(uint8_t *image_buf, struct bpb33* bpb,int *clust_ref)
 {
     uint16_t cluster = 0;
+	char buff [MAXFILENAME];
+
     struct direntry *dirent = (struct direntry*)cluster_to_addr(cluster, image_buf, bpb);
 
 	for (int i = 0 ; i < bpb->bpbRootDirEnts; i++) {
-		uint16_t followclust = print_dirent(dirent, 0, image_buf, bpb, clust_ref);
-		if (is_valid_cluster(followclust, bpb)) {
-			clust_ref[followclust]++;		// reference cluster
+		uint16_t followclust = get_dirent(dirent, buff);
+		
+	if (is_valid_cluster(followclust, bpb)) {  
+			clust_ref[followclust]++;	
 			follow_dir(followclust,1,image_buf,bpb,clust_ref);
 		}
 		dirent++;
@@ -305,62 +370,45 @@ void traverse_root(uint8_t *image_buf, struct bpb33* bpb, int *clust_ref)
  
 }
 
-// goes through cluster list and saves num_orphans in memory 
-void save_orphans(uint8_t *image_buf, struct bpb33* bpb, int *clust_ref) {
+// goes through cluster list and saves the # of orphans in memory 
+void store_orphans(uint8_t *image_buf, struct bpb33* bpb,int *clust_ref) {
     int num_orphans = 0;
 
-
-    for (int i = 2; i < bpb->bpbSectors; i++) {
+    for (int i = 0; i < bpb->bpbSectors; i++) {
 		uint16_t cluster = get_fat_entry(i, image_buf, bpb); 
-		//printf("Index: %d, FAT entry: %d\n", i, cluster); 
-		if (clust_ref[i] == 0 && cluster != (FAT12_MASK & CLUST_FREE) && cluster != (FAT12_MASK & CLUST_BAD)) {
 	
+		if (clust_ref[i] == 0 && cluster != (FAT12_MASK & CLUST_FREE) && cluster != (FAT12_MASK & CLUST_BAD)) {
 			num_orphans++;
 			int size = bpb->bpbBytesPerSec;
 			clust_ref[i] = 1;
-			// must_save: iterating pointer to orphan chains
-			uint16_t must_save = cluster; 
-			while (is_valid_cluster(must_save, bpb)) {
-				//crazy situation: orphan points to inconsistent clusters
-				//weird problem with badimage5: cyclical reference to each other
-				//also, FAT entry 4095? How BIG is a FAT?	
-				if (clust_ref[must_save] > 1) {
-					struct direntry *dirent = (struct direntry*)cluster_to_addr(must_save, image_buf, bpb); 
+	
+			uint16_t store = cluster; 
+			while (is_valid_cluster(store, bpb)) {
+				
+				if (clust_ref[store] > 1) {  // more than 1 ref to an orphan 
+					struct direntry *dirent = (struct direntry*)cluster_to_addr(store, image_buf, bpb); 
 					dirent->deName[0] = SLOT_DELETED; 
-					clust_ref[must_save]--;
-					printf("Multiple references to same orphan cluster!\n"); 
+					clust_ref[store]--;
 				}
-				else if (clust_ref[must_save] == 1) {
-					set_fat_entry(must_save, (FAT12_MASK & CLUST_EOFS), image_buf, bpb);
+				else if (clust_ref[store] == 0) {		
+					clust_ref[store]++;
+				}	
+				else if (clust_ref[store] == 1) {			
+					set_fat_entry(store, (FAT12_MASK & CLUST_EOFS), image_buf, bpb);
 				}
-				else if (clust_ref[must_save] == 0) {
-					clust_ref[must_save]++;
-				}
+				
 				size += bpb->bpbBytesPerSec;
-				must_save = get_fat_entry(must_save, image_buf, bpb);
+				store = get_fat_entry(store, image_buf, bpb);
 			}
-			char num[5];
-			sprintf(num, "%d", num_orphans);
-			char filename[1024] = "";
-			strcat(filename, "found");
-			strcat(filename, num); 
-			strcat(filename, ".dat");
-			char *file = filename; 
-			printf("Bringing %s to orphanage.\n", filename);
-			struct direntry *orphanage = (struct direntry*)root_dir_addr(image_buf, bpb); 
-			create_dirent(orphanage, file, i, size, image_buf, bpb); 
-			
-			printf("Brought %s to the orphanage!\n", filename); 
-			printf("Size is %d\n", size); 
+		
 		}
-	}
-	printf("Found %d orphan(s).\n", num_orphans); 
+	}	
 	
 }
 
-void usage(char *progname)
-{
-    fprintf(stderr, "usage: %s <imagename> <filename>\n", progname);
+
+void usage(char *progname) {
+    fprintf(stderr, "usage: %s <imagename>\n", progname);
     exit(1);
 }
 
@@ -369,22 +417,27 @@ int main(int argc, char** argv) {
     int fd;
     struct bpb33* bpb;
     if (argc < 2) {
-		usage(argv[0]);
+        usage(argv[0]);
     }
 
-    image_buf = mmap_file(argv[1], &fd);
+	image_buf = mmap_file(argv[1], &fd);
     bpb = check_bootsector(image_buf);
 
 	int *clust_ref = malloc(sizeof(int) * bpb->bpbSectors);
-	for (int i=0; i <bpb->bpbSectors; i++) {
-		clust_ref[i] = 0;
+	for (int i=0; i <bpb->bpbSectors;i++) {				//init array of clusters
+			clust_ref[i]=0;
 	}
-	traverse_root(image_buf,bpb,clust_ref);
-	save_orphans(image_buf,bpb,clust_ref);
 
-			
+
+    traverse_root(image_buf, bpb,clust_ref);
+    store_orphans(image_buf, bpb,clust_ref);
+	
+
+    free(bpb);
     unmmap_file(image_buf, &fd);
-	free((void*)clust_ref);
+	free(clust_ref);
     return 0;
 }
+
+
 
