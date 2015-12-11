@@ -212,7 +212,7 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
 	uint16_t first = cluster;
 	uint16_t prev; 
 
-	// go through cluster chain to detect any bad clusters 
+	// go through cluster chain to detect any "bad" clusters 
 	while(is_valid_cluster(cluster, bpb)) {
 		clust_ref[cluster]++;
 		if (clust_ref[cluster] > 1) {   // multiple refs to same cluster
@@ -222,7 +222,7 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
 		prev = cluster;
 		cluster = get_fat_entry(cluster, image_buf, bpb);
 
-		if (cluster == (FAT12_MASK & CLUST_BAD)) {  // bad cluster
+		if (cluster == (FAT12_MASK & CLUST_BAD)) {  // found bad cluster
 			set_fat_entry(cluster,FAT12_MASK & CLUST_FREE, image_buf, bpb);
 			set_fat_entry(prev,FAT12_MASK & CLUST_EOFS, image_buf,bpb);
 			chain_count++;
@@ -241,7 +241,7 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
 			meta_clusters = (size/512) + 1;
 		}
 
-		if (meta_clusters < chain_count) {  // file size < # clusters in FAT
+		if (meta_clusters < chain_count) {  // meta file size < cluster length in FAT
 			cluster = get_fat_entry(first + meta_clusters -1, image_buf, bpb);
 	
 			while (is_valid_cluster(cluster,bpb)) {
@@ -251,10 +251,10 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
 			}
 			set_fat_entry(first + meta_clusters - 1, FAT12_MASK & CLUST_EOFS, image_buf, bpb); 
 
-			printf("New size: %d\n", newsize);
-			printf("Old size: %d\n", size);
+			printf("New file size: %d\n", newsize);
+			printf("Old file size: %d\n", size);
 		}
-		else if (meta_clusters < chain_count) {  // file size > # clusters in FAT
+		else if (meta_clusters < chain_count) {  // meta file size > # clusters in FAT
 			newsize = chain_count * bpb->bpbBytesPerSec;
 			putulong(dirent->deFileSize, newsize);
 		}
@@ -379,7 +379,7 @@ void store_orphans(uint8_t *image_buf, struct bpb33* bpb,int *clust_ref) {
 	
 		if (clust_ref[i] == 0 && cluster != (FAT12_MASK & CLUST_FREE) && cluster != (FAT12_MASK & CLUST_BAD)) {
 			num_orphans++;
-			int size = bpb->bpbBytesPerSec;
+			int file_size = bpb->bpbBytesPerSec;
 			clust_ref[i] = 1;
 	
 			uint16_t store = cluster; 
@@ -396,10 +396,23 @@ void store_orphans(uint8_t *image_buf, struct bpb33* bpb,int *clust_ref) {
 				else if (clust_ref[store] == 1) {			
 					set_fat_entry(store, (FAT12_MASK & CLUST_EOFS), image_buf, bpb);
 				}
-				
-				size += bpb->bpbBytesPerSec;
+			
+				file_size += bpb->bpbBytesPerSec;	//adjust file size entry 
 				store = get_fat_entry(store, image_buf, bpb);
 			}
+
+		printf("File size: %d\n",file_size);
+
+		
+		char filename[1024] = "";
+		strcat(filename, "found");
+		char arr[10];
+		strcat(filename, arr);
+		strcat(filename, ".dat");
+		char *f = filename; 
+		
+		struct direntry *dir = (struct direntry*)root_dir_addr(image_buf,bpb);
+		create_dirent(dir, f, i, file_size, image_buf, bpb); //create directory entries for any unreferenced file data 
 		
 		}
 	}	
